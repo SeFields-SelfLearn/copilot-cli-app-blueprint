@@ -735,9 +735,13 @@ CREATE TABLE IF NOT EXISTS retention_policies (
 Module constants:
 - `APP_DB_KEY="app_db"`.
 - `RETENTION_TABLES = {"generation_log":"created_at","messages":"created_at",
-  "conversations":"updated_at","insights":"created_at"}`.
+  "conversations":"updated_at","insights":"created_at",
+  "system_alerts":"created_at"}`.
 - `RETENTION_DEFAULTS = {"generation_log":90,"messages":180,"conversations":180,
-  "insights":30}`.
+  "insights":30,"system_alerts":60}`.
+- `RETENTION_EXTRA_PREDICATES = {"system_alerts":"acknowledged_at IS NOT NULL"}` —
+  extra per-table prune predicates ANDed with the age cutoff: only ACKNOWLEDGED
+  alerts age out; an open finding never expires silently.
 - `ALERT_SEVERITIES=("info","warning","critical")`.
 - `ALERT_CATEGORIES=("schema","data_quality","llm","storage","retention","auth",
   "audit","source")`.
@@ -779,7 +783,8 @@ user's scopes), `set_user_role`, `set_user_disabled`, `count_active_admins`,
 `seed_retention_policies`, `list_retention_policies`, `get_retention_policy`,
 `update_retention_policy`, `prune_older_than(conn,table,date_column,cutoff,*,
 batch_size=1000)` — **assert `RETENTION_TABLES[table]==date_column`** before the
-f-string delete (no injection surface), batched deletes by rowid;
+f-string delete (no injection surface), AND in any
+`RETENTION_EXTRA_PREDICATES[table]` (same allow-list), batched deletes by rowid;
 `record_retention_run`. Data loads: `get_active_source`/`set_active_source` (via
 app_settings), `record_load`, `list_loads`, `get_load`, `delete_load`,
 `update_load_details` (merge into details_json), `update_load_counts`,
@@ -916,7 +921,9 @@ run `run_tool`. On a result: **Phase 2** stream a one-sentence narration
 result, fall back to a normal `stream_chat`. Persist assistant message FIRST (to
 return its id) then emit SSE `done {message_id}`; on LLMError emit SSE `error` and
 log. Always write a `generation_log` row (best-effort; never break the stream).
-`had_payload` = payload/dashboard tags present. Uses `metrics.start_stream/record/
+`had_payload` = `_has_payload(answer)` — a helper over `_PAYLOAD_TAGS`
+(`<analytics_payload>`, `<analytics_dashboard>`, `<analytics_map>` — keep in
+sync with the frontend parser's block list). Uses `metrics.start_stream/record/
 end_stream` and `active_analytics_conn(app)`/`source_kind(app)`.
 
 ### app/routes/analytics.py — direct data endpoints (all RLS + PII)
@@ -948,7 +955,8 @@ conversation → owner via `message_owner` before writing, 404 otherwise),
 
 ### app/routes/insights.py
 `GET /api/insights` (latest digest + facts, or nulls). `POST
-/api/insights/generate` — gather `triage_facts`, if zero generations return a stub;
+/api/insights/generate` — `@require_role("admin", "analyst")` (viewers must not
+burn model time); gather `triage_facts`, if zero generations return a stub;
 else `complete(build_insights_messages(facts))`, persist + return. This is the
 read-only "triage agent".
 
@@ -988,10 +996,13 @@ returns per-table summaries; one bad table never aborts the sweep.
 `RETENTION_ENABLED=0`).
 
 ### app/governance/detectors.py
-`run_detectors(app_conn, analytics_conn)` runs four `_safe`-wrapped detectors,
+`run_detectors(app_conn, analytics_conn)` runs five `_safe`-wrapped detectors,
 each raising a **deduped** alert: `_check_schema` (PRAGMA integrity_check on both
 dbs + EXPECTED_ANALYTICS_TABLES present → critical/schema), `_check_orphans`
 (workers w/ invalid org, engagement w/o worker → warning/data_quality),
+`_check_dangling_grants` (org-type `user_scopes` values not present in
+`supervisory_orgs` — analytics.db is regenerable, a reseed can silently orphan
+grants → warning/data_quality, listing affected users),
 `_check_storage` (disk ≥80% → warning/storage), `_check_llm` (error rate ≥25% over
 last 50 gens, min 10 samples → warning/llm).
 
@@ -1272,7 +1283,9 @@ list/get/delete/feedback/chat-append, owner immutability on conflicting upserts,
 the `can_access` truth table incl. NULL-owner-is-admin-only, and the legacy
 backfill migration with an idempotent re-run); alerts (dedup while open);
 retention (`prune_older_than` guard +
-batching); admin `validate_user_change` guards; and the full ingest pipeline
+batching + acked-only system_alerts pruning: an old OPEN alert survives, an old
+acked one is pruned); the dangling-grant detector (raise + dedupe, valid/region
+grants stay silent); admin `validate_user_change` guards; and the full ingest pipeline
 (parsers, heuristic+LLM mapping/validation, upload staging, flat-source serving +
 file RLS, merge/upsert deltas, upstream fallback). Frontend Karma/Jasmine spec:
 the payload-parser edge cases listed above.
