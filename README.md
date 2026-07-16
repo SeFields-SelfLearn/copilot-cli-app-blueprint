@@ -107,7 +107,7 @@ Create precisely this tree (omit committed venvs / build artifacts):
 │   │   ├── config.py
 │   │   ├── runtime_config.py
 │   │   ├── db.py
-│   │   ├── store.py
+│   │   ├── store/            # app.db package (base/history/users/alerts/retention/loads/settings)
 │   │   ├── crypto.py
 │   │   ├── auth.py
 │   │   ├── scopes.py
@@ -116,6 +116,7 @@ Create precisely this tree (omit committed venvs / build artifacts):
 │   │   ├── prompts.py
 │   │   ├── llm_client.py
 │   │   ├── analytics_query.py
+│   │   ├── chat_service.py   # grounded-chat orchestration (the LLM seam)
 │   │   ├── server.py
 │   │   ├── governance/
 │   │   │   ├── __init__.py
@@ -196,6 +197,7 @@ Create precisely this tree (omit committed venvs / build artifacts):
 │           │   ├── payload-parser.service.ts
 │           │   ├── payload-parser.service.spec.ts
 │           │   ├── conversation.service.ts
+│           │   ├── conversation-state.service.ts
 │           │   ├── feedback.service.ts
 │           │   ├── dataset.service.ts
 │           │   ├── metrics.service.ts
@@ -670,8 +672,15 @@ daily_metrics, daily_engagement, daily_attendance}`. `init_db`/`close_db`
 on_startup/on_cleanup hooks opening/closing the analytics.db connection (WAL,
 synchronous=NORMAL). `run_query(conn, sql, params=()) -> list[dict]`.
 
-### app/store.py — app.db schema + all persistence (largest file)
-Contains `SCHEMA` (executescript) with these tables **verbatim in intent**:
+### app/store — app.db schema + all persistence (a package)
+Ships as a package `app/store/` split by domain — `base.py` (SCHEMA + migrations
++ `init_app_db`/`close_app_db`), `history.py`, `users.py`, `alerts.py`,
+`retention.py`, `loads.py`, `settings.py` — with `__init__.py` re-exporting the
+full public surface so every call site uses `store.X` unchanged. (A single
+`store.py` is an acceptable equivalent; the split just keeps each domain small.)
+Cross-module deps stay one-directional: `base`→`retention` (seed on init),
+`loads`→`settings` (active-source pointer via app_settings). Contains `SCHEMA`
+(executescript) with these tables **verbatim in intent**:
 
 ```sql
 CREATE TABLE IF NOT EXISTS conversations (
@@ -901,7 +910,17 @@ wins; else load from app_settings decrypted; else generate `token_hex(32)`,
 store encrypted); if `count_users()==0` seed `admin` with a random
 `token_urlsafe(12)` password (`must_change_password=1`) and **log it once**.
 
-### app/routes/chat.py — the SSE chat endpoint
+### app/routes/chat.py + app/chat_service.py — the SSE chat endpoint
+Split into transport (`routes/chat.py`) and orchestration (`chat_service.py`,
+the LLM seam). The route owns `_sse` framing, the ownership guard, the SSE
+`StreamResponse` + the `emit` closure (metrics + accumulation + write), and the
+`done`/`error` frames; it delegates the turn to `chat_service.stream_answer(app,
+user, conn, analytics_db, *, messages, last_user, emit)` and persists via
+`chat_service.save_turn(...)`. `chat_service` owns the two-phase grounded-tool
+flow, `_has_payload`/`_payload_block`, and `_run_grounded_tool` (the scoped
+aggregate). Behavior is identical to a single-file handler; the seam is what an
+enterprise rebuild swaps for its own LLM client.
+
 `_sse(event,data)` frames `event: X\ndata: {json}\n\n`. POST `/api/chat` body
 `{messages:[{role,content}], conversation_id, title}`. **Ownership guard before
 any write**: conversation ids are client-generated, so check
@@ -1195,7 +1214,16 @@ CORS open, read-only, never crashes on a bad reading.
 - **world-geo.ts**: a bundled world topojson/geojson (or `world-atlas` import) for
   the d3-geo base map.
 
-### app.component.ts — shell + conversation state owner
+### app.component.ts (shell) + services/conversation-state.service.ts
+Conversation state + the streaming lifecycle live in a root
+`ConversationStateService` (conversations, activeId, busy, `send`/`stop`/
+`select`/`delete`/`loadHistory`/`rate`/`reset`, and the `onStreamEvent` zone
+re-entry). `AppComponent` is the shell: session gating, nav/view, and autoscroll
+only. Two coordination signals keep the service nav-agnostic — a `scrollPending`
+flag the shell's `ngAfterViewChecked` reads/clears, and a `showChat` Subject the
+shell subscribes to (to switch to the chat view on select/delete-reselect);
+delete-confirm stays in the shell.
+
 Standalone root. Login gate: `authState: 'checking'|'login'|'ready'` (renders
 `<app-login>` until `/api/auth/me` resolves and no forced password change). Tron
 banner with a collapsible nav; **pages** = `Console`(chat), `Telemetry`(metrics),
