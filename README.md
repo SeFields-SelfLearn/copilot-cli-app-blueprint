@@ -676,6 +676,7 @@ Contains `SCHEMA` (executescript) with these tables **verbatim in intent**:
 ```sql
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY, title TEXT NOT NULL,
+    user_id INTEGER REFERENCES users(id),  -- owner; NULL only pre-backfill
     created_at REAL NOT NULL, updated_at REAL NOT NULL);
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -687,7 +688,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, id);
 
 CREATE TABLE IF NOT EXISTS generation_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT,
+    id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, user_id INTEGER,
     created_at REAL NOT NULL, model TEXT, reasoning_tokens INTEGER,
     content_tokens INTEGER, duration_seconds REAL, tokens_per_sec REAL,
     had_payload INTEGER, error TEXT);
@@ -743,13 +744,24 @@ Module constants:
 - `ACTIVE_SOURCE_SETTING="active_data_source"`, `GENERATED_SOURCE="generated"`.
 
 Idempotent migration runner: `schema_migrations(version PK, applied_at)`, a
-`MIGRATIONS` list, `_add_column_if_missing`, migration `001_message_feedback`.
+`MIGRATIONS` list, `_add_column_if_missing`, migrations `001_message_feedback`,
+`002_conversation_owner` (adds `conversations.user_id`, backfills legacy rows to
+the first active admin, creates the `(user_id, updated_at)` index — index lives
+in the migration, not SCHEMA, since on upgraded DBs the column doesn't exist
+until it runs), and `003_genlog_user` (adds `generation_log.user_id`).
 `init_app_db` runs SCHEMA + migrations + `seed_retention_policies` (INSERT OR
 IGNORE defaults). Provide async functions (all commit; best-effort semantics):
-`upsert_conversation`, `add_message(...)->id` (also bumps conversation.updated_at),
-`set_message_feedback`, `delete_conversation`, `log_generation(**fields)`,
-`list_conversations` (with message_count subquery), `get_conversation`
-(convo + ordered messages), `recent_logs`, `logs_summary` (aggregate totals +
+`upsert_conversation(conv_id, title, user_id=None)` (stamps the owner at
+creation; ON CONFLICT deliberately never touches user_id — ownership is
+immutable), `add_message(...)->id` (also bumps conversation.updated_at),
+`set_message_feedback`, `delete_conversation`, ownership helpers
+`conversation_owner(conv_id) -> (exists, owner)` / `message_owner(message_id) ->
+(exists, owner)` (via message→conversation join) and the pure gate
+`can_access(owner, user)` (owner-or-admin; a NULL legacy owner is admin-only,
+never public), `log_generation(**fields)` (includes user_id),
+`list_conversations(user_id=None)` (with message_count subquery; user_id filters
+to that owner, None = admin view of all), `get_conversation`
+(convo incl. user_id + ordered messages), `recent_logs`, `logs_summary` (aggregate totals +
 error_rate% + avg_tokens_per_sec + payload_rate% + feedback up/down counts +
 recent series reversed to chronological), `triage_facts` (rich aggregate over
 generation_log: totals, errors, stalls where content_tokens=0, avg/max reasoning,
@@ -886,7 +898,12 @@ store encrypted); if `count_users()==0` seed `admin` with a random
 
 ### app/routes/chat.py — the SSE chat endpoint
 `_sse(event,data)` frames `event: X\ndata: {json}\n\n`. POST `/api/chat` body
-`{messages:[{role,content}], conversation_id, title}`. Persist user message +
+`{messages:[{role,content}], conversation_id, title}`. **Ownership guard before
+any write**: conversation ids are client-generated, so check
+`conversation_owner` + `can_access` and 404 (same as missing — no existence
+leak) if the id belongs to someone else; the guard is enforcement, so it runs
+OUTSIDE the best-effort suppress block. Stamp `user_id` on the upsert and on the
+generation-log row. Then persist user message +
 upsert conversation (best-effort). Open a `web.StreamResponse` with headers
 `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `X-Accel-Buffering:
 no`. **Phase 1:** `stream_with_tools(build_messages(clean), [tool_definition()])`
@@ -921,9 +938,13 @@ end_stream` and `active_analytics_conn(app)`/`source_kind(app)`.
   `settings.host_agent_url/host` (best-effort, `host_error` note) + storage.
 
 ### app/routes/conversations.py
-`GET /api/conversations`, `GET /api/conversations/{id}`, `DELETE
-/api/conversations/{id}`, `POST /api/messages/{id}/feedback` (rating in
-{up,down,null}), `GET /api/logs/recent`, `GET /api/logs/summary`.
+`GET /api/conversations` (own conversations only; admins see all — support/
+audit), `GET /api/conversations/{id}` and `DELETE /api/conversations/{id}`
+(gated via `can_access`; non-owners get the **same 404 as a missing id** — no
+existence leak; delete stays idempotent for never-existed ids), `POST
+/api/messages/{id}/feedback` (rating in {up,down,null}; resolves message →
+conversation → owner via `message_owner` before writing, 404 otherwise),
+`GET /api/logs/recent`, `GET /api/logs/summary`.
 
 ### app/routes/insights.py
 `GET /api/insights` (latest digest + facts, or nulls). `POST
@@ -1246,7 +1267,11 @@ value ranges, seed determinism, and that the embedded correlations actually exis
 SSE framing + the `_payload_block` contract + chat helpers; auth (salted hashing,
 session signing/tampering/expiry); RLS (`build_filter`, recursive org-subtree
 expansion, a chat-tool leak test proving tool output never contains a name); PII
-masking per role; alerts (dedup while open); retention (`prune_older_than` guard +
+masking per role; conversation ownership (two-user matrix across
+list/get/delete/feedback/chat-append, owner immutability on conflicting upserts,
+the `can_access` truth table incl. NULL-owner-is-admin-only, and the legacy
+backfill migration with an idempotent re-run); alerts (dedup while open);
+retention (`prune_older_than` guard +
 batching); admin `validate_user_change` guards; and the full ingest pipeline
 (parsers, heuristic+LLM mapping/validation, upload staging, flat-source serving +
 file RLS, merge/upsert deltas, upstream fallback). Frontend Karma/Jasmine spec:
