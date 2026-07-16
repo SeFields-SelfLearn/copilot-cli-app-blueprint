@@ -1,3 +1,39 @@
+# Copilot CLI App Blueprint
+
+A single, self-contained **master prompt** that drives GitHub Copilot CLI to
+reconstruct a complete full-stack application from scratch in an empty folder —
+no repo clone required.
+
+The target app, **Workforce Analytics AI**, is a fully-local, containerized
+chat + interactive analytics platform:
+
+- **Frontend:** Angular 18 standalone SPA, D3 v7 charts, crossfilter dashboards,
+  and a d3-geo world map — all rendered inline from a strict, parse-as-data
+  payload contract.
+- **Backend:** `aiohttp` async server that streams a local OpenAI-compatible LLM
+  (LM Studio) over SSE, with **grounded** answers via a safe allow-listed query
+  tool, session auth + roles, application-layer row-level security, PII masking,
+  a governance/retention worker, and a CSV/XLSX/Parquet ingestion pipeline.
+- **Data:** synthetic Workday-style HCM dataset over SQLite (all fictional).
+- **Infra:** Docker multi-stage builds, k3d/Kubernetes, Traefik, docker-compose.
+
+## How to use
+
+1. Open a terminal in an **empty folder** on the target machine.
+2. Start GitHub Copilot CLI.
+3. Copy **everything from the `MASTER RECONSTRUCTION PROMPT` heading below** to the
+   end of this file, and paste it as your first message.
+4. Let it scaffold, then follow the verification steps at the bottom of the prompt.
+
+> **Note:** the target app is ~11k lines. This prompt specifies exact schemas,
+> configs, API surface, and logic so Copilot can generate a *functionally
+> equivalent* rebuild — expect to iterate on the visual-heavy D3 components and
+> long HTML/SCSS, which are described by behavior rather than reproduced verbatim.
+
+License: [MIT](LICENSE).
+
+---
+
 # MASTER RECONSTRUCTION PROMPT — "Workforce Analytics AI"
 
 You are GitHub Copilot CLI operating in an **empty folder**. Build a complete,
