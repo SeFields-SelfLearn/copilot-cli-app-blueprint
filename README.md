@@ -162,6 +162,7 @@ Create precisely this tree (omit committed venvs / build artifacts):
 │       ├── test_ingest_delta.py
 │       ├── test_ingest_fallback.py
 │       ├── test_harness_smoke.py
+│       ├── test_route_integration.py
 │       └── support/          # mock_llm.py (scripted client) + harness.py (route-integration)
 ├── frontend/
 │   ├── Dockerfile
@@ -1330,6 +1331,11 @@ outages + a call log) and a `Harness` that boots `create_app()` on temp DBs with
 a generator-seeded analytics.db, known per-role users, Cookie-header logins, and
 SSE parsing — smoke-proven end-to-end (public/gated routes, per-role sessions,
 plain + grounded two-phase chat, LLM-down error frame), no live model needed.
+Route-integration coverage on that harness: the 401 wall, role gates, RLS
+through the dataset/table routes per role (strict-subset + deny-all proofs
+vs direct SQL), PII masking per role at the response edge, the ownership
+walls incl. cross-user chat-append rejection, and grounded chart series ==
+a direct DB aggregate computed under the asking user's RLS scope.
 Frontend Karma/Jasmine spec:
 the payload-parser edge cases listed above.
 
