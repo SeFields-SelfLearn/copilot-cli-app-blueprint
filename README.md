@@ -160,7 +160,9 @@ Create precisely this tree (omit committed venvs / build artifacts):
 │       ├── test_ingest_upload.py
 │       ├── test_ingest_serving.py
 │       ├── test_ingest_delta.py
-│       └── test_ingest_fallback.py
+│       ├── test_ingest_fallback.py
+│       ├── test_harness_smoke.py
+│       └── support/          # mock_llm.py (scripted client) + harness.py (route-integration)
 ├── frontend/
 │   ├── Dockerfile
 │   ├── .dockerignore
@@ -853,6 +855,12 @@ accumulates `tool_calls` argument fragments and yields a final `("tool_call",
 `choices[0].message.content`). Auth header `Bearer {settings.llm_api_key}`, total
 timeout `settings.llm_request_timeout`.
 
+**Injectable client seam:** `LLM_CLIENT_KEY = "llm_client"` and
+`client_for(app)` — returns `app.get(LLM_CLIENT_KEY)` or this module itself.
+`chat_service` and the insights digest resolve the client through it, so tests
+(a scripted mock) or an alternative binding (a hosted endpoint) can swap the
+whole client per app instance with zero production behavior change.
+
 ### app/prompts.py — system prompt + payload contract
 `SCHEMA_DESCRIPTION` describes all 9 HCM tables + the discoverable people-analytics
 correlations. `ANALYTICS_CONTRACT` teaches THREE inline block formats the frontend
@@ -1315,7 +1323,14 @@ batching + acked-only system_alerts pruning: an old OPEN alert survives, an old
 acked one is pruned); the dangling-grant detector (raise + dedupe, valid/region
 grants stay silent); admin `validate_user_change` guards; and the full ingest pipeline
 (parsers, heuristic+LLM mapping/validation, upload staging, flat-source serving +
-file RLS, merge/upsert deltas, upstream fallback). Frontend Karma/Jasmine spec:
+file RLS, merge/upsert deltas, upstream fallback). Plus a **route-integration
+harness** (`tests/support/`): a scripted `MockLLM` injected via
+`app[LLM_CLIENT_KEY]` (turns of reasoning/content/tool_call events + scriptable
+outages + a call log) and a `Harness` that boots `create_app()` on temp DBs with
+a generator-seeded analytics.db, known per-role users, Cookie-header logins, and
+SSE parsing — smoke-proven end-to-end (public/gated routes, per-role sessions,
+plain + grounded two-phase chat, LLM-down error frame), no live model needed.
+Frontend Karma/Jasmine spec:
 the payload-parser edge cases listed above.
 
 ---
