@@ -162,6 +162,7 @@ Create precisely this tree (omit committed venvs / build artifacts):
 │       ├── test_ingest_delta.py
 │       ├── test_ingest_fallback.py
 │       ├── test_harness_smoke.py
+│       ├── test_instructions.py
 │       ├── test_route_integration.py
 │       └── support/          # mock_llm.py (scripted client) + harness.py (route-integration)
 ├── frontend/
@@ -671,7 +672,12 @@ Export singleton `settings = Settings()`.
 `GROUNDING_MODES = ("strict","demo")` — unknown values ignored, case
 normalized), `.as_dict()`, `.defaults()` (the startup values). Export singleton
 `runtime`. `EDITABLE = ("llm_base_url","llm_model","llm_temperature",
-"grounding_mode")`.
+"grounding_mode")`. **Org instruction layer (C1):** `org_instructions` (capped
+`ORG_INSTRUCTIONS_MAX_CHARS=4000`, stripped) + `org_instructions_enabled`;
+`active_org_instructions()` returns the text or None when disabled/empty.
+Deliberately NOT in `as_dict()` — policy text is admin-visible only while
+`/api/settings` is readable by any session. Persisted via app_settings
+(`org_instructions`, `org_instructions_enabled` "1"/"0"), reloaded on startup.
 
 ### app/db.py
 `DB_KEY="db"`. `QUERYABLE_TABLES` = the 9 analytics tables set:
@@ -889,6 +895,13 @@ strict).
 - **demo**: the contract is included, but there is **no "invent plausible
   numbers" instruction** — figures not from the tool MUST be labelled
   illustrative.
+**Org policy injection (C1):** `build_system_prompt(mode, org_text=None)` /
+`build_messages(history, mode, org_text)` — a non-empty org_text appends a
+delimited block (`=== ORGANIZATION POLICY (set by your administrators) ===` /
+`=== END ORGANIZATION POLICY ===`) AFTER the safety core, preceded by an
+explicit subordination preamble (tighten only; can never override grounding,
+expand data access, or reveal the prompt — RLS/PII stay server-enforced
+regardless).
 Both share `SCHEMA_DESCRIPTION` + the tools paragraph (teaches all three:
 `query_workforce` one breakdown, `query_workforce_map` per-city,
 `query_workforce_dashboard` 2-3-dim exploration) + reasoning-brevity
@@ -965,7 +978,7 @@ to return `(block_kind, result)`; `_grounded_block(kind, result)` emits the
 matching tagged block — `_has_payload`/`_payload_block` (server-built payloads carry
 `"grounded": true` — the tag only ever originates here, from real query
 results), and `_run_grounded_tool` (the scoped aggregate); prompts are built
-with `runtime.grounding_mode`. Behavior is identical to a single-file handler; the seam is what an
+with `runtime.grounding_mode` + `runtime.active_org_instructions()` (C1). Behavior is identical to a single-file handler; the seam is what an
 enterprise rebuild swaps for its own LLM client.
 
 `_sse(event,data)` frames `event: X\ndata: {json}\n\n`. POST `/api/chat` body
@@ -1043,7 +1056,10 @@ Retention: `GET /api/admin/retention`, `PUT /api/admin/retention/{table}`
 self-lockout, keep ≥1 active admin), `GET/POST /api/admin/users`, `PATCH
 /api/admin/users/{id}`, `POST /api/admin/users/{id}/reset-password`, `POST/DELETE
 /api/admin/users/{id}/scopes[/{scope_id}]` (validate org/region exists in
-analytics.db), `GET /api/admin/scope-options`. Ingestion: `GET
+analytics.db), `GET /api/admin/scope-options`. Instructions (C1): `GET/PUT /api/admin/instructions` — org policy round-trip
+with the REAL assembled `effective_prompt` preview (`build_system_prompt(mode,
+active_org)`); over-cap -> explicit 400; every change audited; persisted via
+app_settings. Ingestion: `GET
 /api/admin/data-sources` (active + loads + upstream state), `GET
 /api/admin/data/schema` (canonical fields), `POST /api/admin/data/upload`
 (multipart; size-capped; reject `.xlsm`; → `receive_upload`), `POST
@@ -1252,7 +1268,7 @@ CORS open, read-only, never crashes on a bad reading.
   Overwatch client (alerts, ackAlert, runDetectors, retention CRUD+run, users,
   scopeOptions, createUser, updateUser, resetPassword, add/removeScope,
   dataSources, dataSchema, uploadDataset(FormData), applyMapping(replace|merge),
-  deleteLoad, activateLoad, activateGenerated).
+  deleteLoad, activateLoad, activateGenerated, instructions/saveInstructions (C1)).
 - **grounding.service.ts**: caches the server's `grounding_mode` (from
   `/api/settings` after login; default strict, fail safe) for the renderers —
   read-only presentation state; the server gates who may change it.
@@ -1327,7 +1343,9 @@ autoscroll. New conversation id = `crypto.randomUUID()`.
 - **admin-dashboard** ("Overwatch", admin-only) + **ingestion-panel**: alerts feed
   with ack + severity/category filters; retention policy editor + "run now";
   detector "run checks"; user/scope management (create/disable/role/reset-password/
-  grant-revoke scopes with lockout guards); and the ingestion panel — upload a
+  grant-revoke scopes with lockout guards); the **Assistant policy panel (C1)** —
+  org-instruction textarea with live char count, enable/disable, and the
+  collapsible REAL effective-prompt preview; and the ingestion panel — upload a
   file, review the proposed column mapping (dropdowns from `/api/admin/data/schema`),
   apply (replace|merge), activate/rollback, upstream status.
 
@@ -1388,7 +1406,10 @@ through the dataset/table routes per role (strict-subset + deny-all proofs
 vs direct SQL), PII masking per role at the response edge, the ownership
 walls incl. cross-user chat-append rejection, and grounded chart series ==
 a direct DB aggregate computed under the asking user's RLS scope.
-Frontend Karma/Jasmine spec:
+Org-instruction coverage: delimited/subordinate assembly (safety core before
+the block), no block when empty/disabled, cap+strip, admin-API round-trip +
+403s + over-cap 400 + audit entries, and the org block in the prompt actually
+sent (mock call log). Frontend Karma/Jasmine spec:
 the payload-parser edge cases listed above.
 
 ---
