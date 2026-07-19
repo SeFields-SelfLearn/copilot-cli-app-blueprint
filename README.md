@@ -201,6 +201,7 @@ Create precisely this tree (omit committed venvs / build artifacts):
 │           │   ├── payload-parser.service.spec.ts
 │           │   ├── conversation.service.ts
 │           │   ├── conversation-state.service.ts
+│           │   ├── grounding.service.ts
 │           │   ├── feedback.service.ts
 │           │   ├── dataset.service.ts
 │           │   ├── metrics.service.ts
@@ -659,14 +660,18 @@ Frozen `@dataclass Settings` sourcing every value from env via
 `upstream_fail_threshold`(3), `ingest_auto_fallback`(bool from
 INGEST_AUTO_FALLBACK, default true), `cors_origins`
 (`http://localhost:8081,http://localhost:4200`), `retention_enabled`(true),
-`retention_interval_hours`(6), `session_secret`(""), `field_encryption_key`("").
+`retention_interval_hours`(6), `grounding_mode`(GROUNDING_MODE=`strict`),
+`session_secret`(""), `field_encryption_key`("").
 Export singleton `settings = Settings()`.
 
 ### app/runtime_config.py
 `RuntimeConfig` holds runtime-mutable `llm_base_url`, `llm_model`,
-`llm_temperature` (init from settings). `.update(*, ...)` (clamps temperature to
-[0,2], strips strings), `.as_dict()`, `.defaults()` (the startup values). Export
-singleton `runtime`. `EDITABLE = ("llm_base_url","llm_model","llm_temperature")`.
+`llm_temperature`, and `grounding_mode` (init from settings). `.update(*, ...)`
+(clamps temperature to [0,2], strips strings; grounding_mode validated against
+`GROUNDING_MODES = ("strict","demo")` — unknown values ignored, case
+normalized), `.as_dict()`, `.defaults()` (the startup values). Export singleton
+`runtime`. `EDITABLE = ("llm_base_url","llm_model","llm_temperature",
+"grounding_mode")`.
 
 ### app/db.py
 `DB_KEY="db"`. `QUERYABLE_TABLES` = the 9 analytics tables set:
@@ -872,10 +877,21 @@ parses as **data, never eval**:
   "bar"|"line", dimension, measure, agg:"sum"|"avg"|"count", title}]}`, 15–60 rows.
 - `<analytics_map>` — `{title, value_label, points:[{city,value}]}`; **cities must
   come from the fixed 28-city list** (coords resolved client-side).
-`SYSTEM_PROMPT = f"..."` combining them + instruction to CALL the `query_workforce`
-tool for real numbers, keep reasoning brief for small talk. `build_messages(
-history)` prepends the system prompt. `build_tool_narration_messages(question,
-result)` — minimal prompt to write ONE sentence over real rows (no chart).
+**Grounding modes (B1):** the system prompt is mode-assembled —
+`build_system_prompt(mode)` / `build_messages(history, mode="strict")`, mode
+from `runtime.grounding_mode` (default **strict**, unknown modes fail safe to
+strict).
+- **strict**: `ANALYTICS_CONTRACT` is **omitted entirely** and replaced by
+  `STRICT_ANALYTICS_POLICY` — the model is never taught the block format
+  (enforcement by omission; charts only via tools the backend renders), is
+  forbidden from stating figures it did not retrieve from a tool, and must
+  offer to run a query instead of guessing.
+- **demo**: the contract is included, but there is **no "invent plausible
+  numbers" instruction** — figures not from the tool MUST be labelled
+  illustrative.
+Both share `SCHEMA_DESCRIPTION` + the CALL-the-tool paragraph + reasoning-brevity
+closing. `build_tool_narration_messages(question, result)` — minimal prompt to
+write ONE sentence over real rows (no chart).
 `INSIGHTS_SYSTEM` + `build_insights_messages(facts)` for the reliability digest.
 
 ### app/analytics_query.py — the grounded tool (allow-listed aggregates)
@@ -926,8 +942,10 @@ the LLM seam). The route owns `_sse` framing, the ownership guard, the SSE
 `done`/`error` frames; it delegates the turn to `chat_service.stream_answer(app,
 user, conn, analytics_db, *, messages, last_user, emit)` and persists via
 `chat_service.save_turn(...)`. `chat_service` owns the two-phase grounded-tool
-flow, `_has_payload`/`_payload_block`, and `_run_grounded_tool` (the scoped
-aggregate). Behavior is identical to a single-file handler; the seam is what an
+flow, `_has_payload`/`_payload_block` (server-built payloads carry
+`"grounded": true` — the tag only ever originates here, from real query
+results), and `_run_grounded_tool` (the scoped aggregate); prompts are built
+with `runtime.grounding_mode`. Behavior is identical to a single-file handler; the seam is what an
 enterprise rebuild swaps for its own LLM client.
 
 `_sse(event,data)` frames `event: X\ndata: {json}\n\n`. POST `/api/chat` body
@@ -1174,7 +1192,8 @@ CORS open, read-only, never crashes on a bad reading.
   {app,host,host_error,storage}, LogsSummary` (match §3 metrics shapes).
 - **insights.models.ts**: `TriageFacts` (all triage_facts keys), `InsightsResponse
   {digest,facts,generated_at}`.
-- **settings.models.ts**: `LlmSettings {llm_base_url,llm_model,llm_temperature}`,
+- **settings.models.ts**: `GroundingMode='strict'|'demo'`; `LlmSettings
+  {llm_base_url,llm_model,llm_temperature,grounding_mode}`,
   `SettingsResponse {current,defaults,api_key_set,request_timeout}`,
   `ModelsResponse {reachable,models,error}`.
 - **admin.models.ts**: `AlertSeverity`, `SystemAlert`, `AlertCounts`,
@@ -1198,10 +1217,13 @@ CORS open, read-only, never crashes on a bad reading.
   series of {string label, finite number value}, cap 50), `tryParseDashboard`
   (normalized rows keeping only string|number values, charts validated against
   sample row keys, agg in {sum,avg,count}, count needs no measure, cap 4 charts/
-  1000 rows), `tryParseMap` (points {string city, finite value}, cap 60). Malformed
+  1000 rows), `tryParseMap` (points {string city, finite value}, cap 60). All three configs
+  surface `grounded: obj['grounded'] === true` — **only an explicit boolean true
+  counts**; strings/numbers are untrusted. Malformed
   → dropped or shown as text. Ship `payload-parser.service.spec.ts` covering:
   partial stream (no chart until closing tag), malformed JSON fallback, unknown
-  chart type, invalid series points, oversized-series cap.
+  chart type, invalid series points, oversized-series cap, and the grounded-flag
+  cases (explicit true surfaced; absent/string/number -> false; dashboards+maps).
 - **conversation.service.ts**: `list/get/delete` mapping stored messages →
   ChatMessage (snake→camel). **feedback.service.ts**: fire-and-forget POST rating.
   **dataset.service.ts**: `workers()`→WorkerRecord[]. **metrics.service.ts**:
@@ -1211,7 +1233,12 @@ CORS open, read-only, never crashes on a bad reading.
   scopeOptions, createUser, updateUser, resetPassword, add/removeScope,
   dataSources, dataSchema, uploadDataset(FormData), applyMapping(replace|merge),
   deleteLoad, activateLoad, activateGenerated).
-- **samples.ts**: `resolveDemo(arg)` returns canned assistant text (with example
+- **grounding.service.ts**: caches the server's `grounding_mode` (from
+  `/api/settings` after login; default strict, fail safe) for the renderers —
+  read-only presentation state; the server gates who may change it.
+- **samples.ts**: `resolveDemo(arg)` returns canned assistant text — fixtures
+  carry `grounded: true` (app-authored deterministic data, not model output, so
+  previews keep rendering in strict mode) — (with example
   `<analytics_payload>`/`<analytics_dashboard>`/`<analytics_map>` blocks) for the
   `/demo` slash-command previews. **fullscreen.service.ts**: singleton holding the
   content shown in the fullscreen overlay (`openChart/openDashboard/openMap/close`).
@@ -1247,7 +1274,11 @@ autoscroll. New conversation id = `crypto.randomUUID()`.
 - **login**: username/password form; on success, if `must_change_password` show a
   change-password step; emits `(authed)`.
 - **sidebar**: conversation list, new-chat, select, delete, collapse toggle.
-- **message-bubble**: renders a ChatMessage — a collapsible "thinking" panel
+- **message-bubble**: renders a ChatMessage with the **grounded rendering
+  policy**: tagged segments get a "◉ from your data" chip; untagged in demo mode
+  a "◇ illustrative — not from your data" badge; untagged in strict mode a
+  suppression notice ("unverified figures suppressed") instead of the renderer —
+  nothing silently swallowed. Also a collapsible "thinking" panel
   (reasoning + elapsed ms + live token counts), the answer parsed via
   `PayloadParserService` into interleaved text/chart/dashboard/map segments, and
   👍/👎 feedback buttons (emits `(rate)`).
@@ -1269,7 +1300,8 @@ autoscroll. New conversation id = `crypto.randomUUID()`.
 - **insights-dashboard** ("Grid"): the big DC.js-style crossfilter board over
   `/api/dataset/workers` — pies/row/bar charts, a hire-year brush, a location map,
   and correlation scatters (calls↔performance, lateness↔performance).
-- **settings** ("Control"): runtime LLM model/endpoint/temperature; "Detect loaded
+- **settings** ("Control"): runtime LLM model/endpoint/temperature + the
+  **grounding-policy select** (strict | demo); "Detect loaded
   models" (`/api/llm/models`); PUT is admin-only server-side (show read-only for
   non-admins).
 - **admin-dashboard** ("Overwatch", admin-only) + **ingestion-panel**: alerts feed
