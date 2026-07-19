@@ -889,9 +889,12 @@ strict).
 - **demo**: the contract is included, but there is **no "invent plausible
   numbers" instruction** — figures not from the tool MUST be labelled
   illustrative.
-Both share `SCHEMA_DESCRIPTION` + the CALL-the-tool paragraph + reasoning-brevity
+Both share `SCHEMA_DESCRIPTION` + the tools paragraph (teaches all three:
+`query_workforce` one breakdown, `query_workforce_map` per-city,
+`query_workforce_dashboard` 2-3-dim exploration) + reasoning-brevity
 closing. `build_tool_narration_messages(question, result)` — minimal prompt to
-write ONE sentence over real rows (no chart).
+write ONE sentence over real rows (no chart); `_narration_summary` feeds the
+model series/points/board-shape, never hundreds of raw rows.
 `INSIGHTS_SYSTEM` + `build_insights_messages(facts)` for the reliability digest.
 
 ### app/analytics_query.py — the grounded tool (allow-listed aggregates)
@@ -904,7 +907,7 @@ lateness_band` (CASE expressions over `avg_engagement`/`avg_calls`/`avg_late`).
 `avg_salary`. `_PIE_DIMS={"work_mode","status","worker_type"}`. `_WORKER_CTE` — a
 per-worker CTE joining workers→job_profiles→job_families→locations with correlated
 subaverages of `daily_engagement.calls_completed`, `digital_engagement_score`, and
-`daily_attendance.minutes_late (on_site=1)`, gated by `WHERE {scope}`.
+`daily_attendance.minutes_late (on_site=1)`, plus `l.city`, gated by `WHERE {scope}`.
 `tool_definition()` returns the OpenAI function schema `query_workforce(dimension
 enum, measure enum)`. `run_tool(conn, dimension, measure, scope=ALLOW_ALL,
 worker_cte=None)` validates against the allow-lists, builds `SELECT {dim} AS label,
@@ -913,6 +916,20 @@ label, else value DESC), filters out None/"n/a", caps 25, returns `{title,
 chart_type ("pie" if pie-dim+headcount else "bar"), x_label, y_label, series}`.
 `worker_cte` lets a flat uploaded snapshot supply its own CTE template + leading
 params (see ingest/serving).
+
+**Grounded map + dashboard builders (B2):** `map_tool_definition()` /
+`run_map_tool(conn, measure, scope, worker_cte)` — per-city aggregate over the
+CTE (`GROUP BY city`, value DESC, cap 60) returning `{title, value_label,
+points:[{city,value}]}` — pure aggregates, PII-safe like the single-chart tool.
+`dashboard_tool_definition()` / `run_dashboard_tool(conn, dimensions, measure,
+scope, worker_cte)` — 2-3 deduped dims from `DASHBOARD_DIMENSIONS` (the
+non-band dimensions; bands are single-chart constructs, city belongs to the
+map) x one measure -> per-worker rows for a client crossfilter board. Rows
+carry ONLY the chosen dims + one numeric column via `_MEASURE_COLUMNS`
+(headcount = dims only, charts `agg:"count"`; else `agg:"avg"`), NULL-free,
+capped `_DASHBOARD_ROW_CAP=500`. **Amended PII invariant: no grounded tool
+output ever contains an identifying field (no name, no id) — enforced by a
+recursive key-scan test.**
 
 ### app/server.py — application factory
 `create_app()`: `web.Application(middlewares=[auth_middleware],
@@ -942,7 +959,10 @@ the LLM seam). The route owns `_sse` framing, the ownership guard, the SSE
 `done`/`error` frames; it delegates the turn to `chat_service.stream_answer(app,
 user, conn, analytics_db, *, messages, last_user, emit)` and persists via
 `chat_service.save_turn(...)`. `chat_service` owns the two-phase grounded-tool
-flow, `_has_payload`/`_payload_block` (server-built payloads carry
+flow — offering all three tools (`tool_definition`, `map_tool_definition`,
+`dashboard_tool_definition`) and dispatching `_run_grounded_tool` by tool name
+to return `(block_kind, result)`; `_grounded_block(kind, result)` emits the
+matching tagged block — `_has_payload`/`_payload_block` (server-built payloads carry
 `"grounded": true` — the tag only ever originates here, from real query
 results), and `_run_grounded_tool` (the scoped aggregate); prompts are built
 with `runtime.grounding_mode`. Behavior is identical to a single-file handler; the seam is what an
@@ -1090,7 +1110,7 @@ last 50 gens, min 10 samples → warning/llm).
   rows whose worker_id the new load lacks → standalone snapshot; base untouched),
   `insert_raw_rows`, `get_raw_rows`, `delete_raw_rows`.
 - **serving.py**: file-source query shapes. `FILE_WORKER_CTE` (aliases flat columns
-  to the tool's expected names, `WHERE load_id=? AND {scope}`). `DATASET_SQL`.
+  to the tool's expected names incl. `city`, `WHERE load_id=? AND {scope}`). `DATASET_SQL`.
   `file_scope_filter`/`file_scope_for` — **region grants filter the `region`
   column; org-only grants fail closed**; admin unscoped. `dataset_rows`, `summary`,
   `table_preview`.
