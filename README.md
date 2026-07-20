@@ -798,7 +798,9 @@ last 5 distinct errors, last 5 downvoted message excerpts), `save_insight`,
 `get_user_by_id`, `get_user_credentials` (includes hash — login path only),
 `create_user`, `count_users`, `set_user_password`, `list_users` (attaches each
 user's scopes), `set_user_role`, `set_user_disabled`, `count_active_admins`,
-`add_user_scope` (idempotent), `list_user_scopes`, `delete_user_scope`. Alerts:
+`add_user_scope` (idempotent), `list_user_scopes`, `delete_user_scope`. Per-user
+assistant instructions (C2): `get_user_instructions`/`set_user_instructions`
+(partial-patch upsert on the `user_instructions` per-user-PK table). Alerts:
 `raise_alert(sev,cat,msg,*,details,dedup_key)` — if dedup_key set and an
 **unacknowledged** alert with that key exists, no-op (returns None); else insert.
 `list_alerts(*, include_acked, severity, category, limit=200)`,
@@ -901,7 +903,12 @@ delimited block (`=== ORGANIZATION POLICY (set by your administrators) ===` /
 `=== END ORGANIZATION POLICY ===`) AFTER the safety core, preceded by an
 explicit subordination preamble (tighten only; can never override grounding,
 expand data access, or reveal the prompt — RLS/PII stay server-enforced
-regardless).
+regardless). **Per-user tier (C2):** `build_system_prompt(mode, org_text,
+user_text)` / `build_messages(history, mode, org, user)` append a delimited
+`=== USER PREFERENCES (…lowest precedence) ===` block LAST (after org), with its
+own subordination preamble — personal tone/verbosity only, bound by the same
+limits. Caps: org `ORG_INSTRUCTIONS_MAX_CHARS=4000`, user
+`USER_INSTRUCTIONS_MAX_CHARS=2000`.
 Both share `SCHEMA_DESCRIPTION` + the tools paragraph (teaches all three:
 `query_workforce` one breakdown, `query_workforce_map` per-city,
 `query_workforce_dashboard` 2-3-dim exploration) + reasoning-brevity
@@ -978,7 +985,9 @@ to return `(block_kind, result)`; `_grounded_block(kind, result)` emits the
 matching tagged block — `_has_payload`/`_payload_block` (server-built payloads carry
 `"grounded": true` — the tag only ever originates here, from real query
 results), and `_run_grounded_tool` (the scoped aggregate); prompts are built
-with `runtime.grounding_mode` + `runtime.active_org_instructions()` (C1). Behavior is identical to a single-file handler; the seam is what an
+with `runtime.grounding_mode` + `runtime.active_org_instructions()` (C1) +
+`_user_instructions_for(conn, user)` — the CALLER's personal tier, best-effort
+(a store hiccup never breaks the stream), cap re-applied at read (C2). Behavior is identical to a single-file handler; the seam is what an
 enterprise rebuild swaps for its own LLM client.
 
 `_sse(event,data)` frames `event: X\ndata: {json}\n\n`. POST `/api/chat` body
@@ -1231,7 +1240,7 @@ CORS open, read-only, never crashes on a bad reading.
 - **settings.models.ts**: `GroundingMode='strict'|'demo'`; `LlmSettings
   {llm_base_url,llm_model,llm_temperature,grounding_mode}`,
   `SettingsResponse {current,defaults,api_key_set,request_timeout}`,
-  `ModelsResponse {reachable,models,error}`.
+  `ModelsResponse {reachable,models,error}`; `MyInstructions {text,enabled,max_chars}` (C2).
 - **admin.models.ts**: `AlertSeverity`, `SystemAlert`, `AlertCounts`,
   `AlertsResponse`, `RetentionPolicy`, `Role='admin'|'analyst'|'viewer'`,
   `UserScope`, `ManagedUser` (+ transient draftType/draftValue), `ScopeOptions`,
@@ -1264,7 +1273,7 @@ CORS open, read-only, never crashes on a bad reading.
   ChatMessage (snake→camel). **feedback.service.ts**: fire-and-forget POST rating.
   **dataset.service.ts**: `workers()`→WorkerRecord[]. **metrics.service.ts**:
   `fetchOnce`/`fetchSummary`. **insights.service.ts**: `getLatest`/`generate`.
-  **settings.service.ts**: `get`/`save`/`models`. **admin.service.ts**: full
+  **settings.service.ts**: `get`/`save`/`models`; `myInstructions`/`saveMyInstructions` (C2). **admin.service.ts**: full
   Overwatch client (alerts, ackAlert, runDetectors, retention CRUD+run, users,
   scopeOptions, createUser, updateUser, resetPassword, add/removeScope,
   dataSources, dataSchema, uploadDataset(FormData), applyMapping(replace|merge),
