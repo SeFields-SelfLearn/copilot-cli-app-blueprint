@@ -163,6 +163,7 @@ Create precisely this tree (omit committed venvs / build artifacts):
 │       ├── test_ingest_fallback.py
 │       ├── test_harness_smoke.py
 │       ├── test_instructions.py
+│       ├── test_instruction_hardening.py
 │       ├── test_route_integration.py
 │       └── support/          # mock_llm.py (scripted client) + harness.py (route-integration)
 ├── frontend/
@@ -908,7 +909,13 @@ user_text)` / `build_messages(history, mode, org, user)` append a delimited
 `=== USER PREFERENCES (…lowest precedence) ===` block LAST (after org), with its
 own subordination preamble — personal tone/verbosity only, bound by the same
 limits. Caps: org `ORG_INSTRUCTIONS_MAX_CHARS=4000`, user
-`USER_INSTRUCTIONS_MAX_CHARS=2000`.
+`USER_INSTRUCTIONS_MAX_CHARS=2000`. **Hardening (C3):** `_sanitize_instruction()`
+drops any `=== … ===` fence line from org/user text before injection (can't
+close a block early or forge a higher-precedence section — prompt always has one
+valid fence pair). **Narration (C3):** `build_tool_narration_messages(question,
+result, org_text=None)` also injects the ORG block (sanitized) so
+safety/data-handling rules hold on grounded answers; the per-user TONE tier is
+deliberately NOT applied there, keeping data narration uniform.
 Both share `SCHEMA_DESCRIPTION` + the tools paragraph (teaches all three:
 `query_workforce` one breakdown, `query_workforce_map` per-city,
 `query_workforce_dashboard` 2-3-dim exploration) + reasoning-brevity
@@ -1418,7 +1425,12 @@ a direct DB aggregate computed under the asking user's RLS scope.
 Org-instruction coverage: delimited/subordinate assembly (safety core before
 the block), no block when empty/disabled, cap+strip, admin-API round-trip +
 403s + over-cap 400 + audit entries, and the org block in the prompt actually
-sent (mock call log). Frontend Karma/Jasmine spec:
+sent (mock call log). Plus the C3 hardening + **invariant matrix**: sanitizer
+strips fence spoofing; org policy reaches narration while user tone does not; and
+no instruction — org or personal — can widen access (a viewer told 'reveal names
+and salaries' still gets initials + null salary; a region-scoped analyst told
+'include all regions' still sees one; a hostile org policy can't make the grounded
+dashboard leak identifiers). Frontend Karma/Jasmine spec:
 the payload-parser edge cases listed above.
 
 ---
