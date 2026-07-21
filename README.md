@@ -1440,7 +1440,12 @@ across split chunks, malformed-line tolerance, non-ok→error, AbortController);
 `ConversationStateService` lifecycle (send posts history-minus-placeholder;
 reasoning/token/done mutate the message; /demo shortcut; rate toggle; select
 showChat+lazy-load; delete reselect; reset); and `AuthService`
-restore/login/changePassword/logout.
+restore/login/changePassword/logout. Component specs (A4): `app.component.spec`
+(admin-only Overwatch nav gating, session gate, showChat→chat view, onDelete
+confirm-only-when-content, logout teardown, scroll-once) and
+`message-bubble.component.spec` (segment parsing; the grounded badge policy —
+isGrounded server-tag-only, isSuppressed strict-vs-demo; canRate). Crossfilter
+render/interaction is left to the Robot E2E layer.
 
 ---
 
