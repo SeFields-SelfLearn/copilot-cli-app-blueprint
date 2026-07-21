@@ -116,7 +116,8 @@ Create precisely this tree (omit committed venvs / build artifacts):
 │   │   ├── prompts.py
 │   │   ├── llm_client.py
 │   │   ├── analytics_query.py
-│   │   ├── chat_service.py   # grounded-chat orchestration (the LLM seam)
+│   │   ├── chat_service.py
+│   │   ├── fake_llm.py   # grounded-chat orchestration (the LLM seam)
 │   │   ├── server.py
 │   │   ├── governance/
 │   │   │   ├── __init__.py
@@ -630,12 +631,15 @@ both images `analytics-backend:local`, `analytics-frontend:local`), `import`
 Vars: `CLUSTER=analytics NAMESPACE=analytics-chat`.
 
 ### .github/workflows/regression.yml
-Two jobs on push(main)/PR: (1) `backend-tests` — setup Python 3.12, install
-`requirements.txt`+`requirements-dev.txt`, `cd backend && pytest -q`. (2)
-`e2e-regression` — `docker compose up -d --build`, poll `/api/health`, seed
-users (`docker compose exec -T backend python -m scripts.seed_ci`), install Robot
-+ Chromium (`rfbrowser init`), run `robot --exclude llm tests/robot`, upload the
-report artifact, `docker compose down -v`.
+Three jobs on push(main)/PR: (1) `backend-tests` — setup Python 3.12, install
+`requirements.txt`+`requirements-dev.txt`, `cd backend && pytest -q --cov=app
+--cov-fail-under=70`. (2) `frontend-tests` — setup Node 20, `npm ci`, `npm run
+test:ci` (headless Karma with the coverage floor). (3) `e2e-regression` —
+`docker compose up -d --build` **with `FAKE_LLM=1`** (deterministic in-app model,
+so the grounded-chat E2E runs without LM Studio), poll `/api/health`, seed users
+(`scripts.seed_ci`), install Robot + Chromium (`rfbrowser init`), run `robot
+--exclude llm tests/robot` (suite 08 is untagged so it runs; the real-model suite
+04 stays tagged `llm`), upload the report artifact, `docker compose down -v`.
 
 ### .gitignore
 Ignore `__pycache__/ *.pyc .venv*/ venv/`, `backend/docs/_build/ backend/data/`,
@@ -960,6 +964,15 @@ carry ONLY the chosen dims + one numeric column via `_MEASURE_COLUMNS`
 capped `_DASHBOARD_ROW_CAP=500`. **Amended PII invariant: no grounded tool
 output ever contains an identifying field (no name, no id) — enforced by a
 recursive key-scan test.**
+
+### app/fake_llm.py — deterministic in-app LLM (CI / demos)
+Enabled by `FAKE_LLM=1`; `create_app()` sets `app[LLM_CLIENT_KEY]=FakeLLM()` at
+startup (same seam the tests use). Satisfies `stream_chat`/`stream_with_tools`/
+`complete`: routes data-shaped questions to the correct grounded tool
+(`query_workforce`/`_map`/`_dashboard`, keyword-based) so real charts render from
+real rows, and for plain chat **echoes the injected org/user instruction text**
+(a stand-in for a model obeying) so the instruction layer is observable
+end-to-end. Not a language model — deterministic.
 
 ### app/server.py — application factory
 `create_app()`: `web.Application(middlewares=[auth_middleware],
@@ -1433,7 +1446,11 @@ strips fence spoofing; org policy reaches narration while user tone does not; an
 no instruction — org or personal — can widen access (a viewer told 'reveal names
 and salaries' still gets initials + null salary; a region-scoped analyst told
 'include all regions' still sees one; a hostile org policy can't make the grounded
-dashboard leak identifiers). Frontend Karma/Jasmine specs (A3): the
+dashboard leak identifiers). E2E (A5): a Robot suite driven by the in-app FakeLLM (`FAKE_LLM=1`) so CI
+renders a real grounded chart with the "from your data" chip and proves a
+personal instruction reaches the model — no LM Studio. Coverage gates: backend
+`--cov-fail-under=70`; a `karma.conf.js` coverage floor run in a dedicated
+frontend CI job. Frontend Karma/Jasmine specs (A3): the
 payload-parser edge cases listed above, plus the core services — `ChatService`
 SSE framing via a faked fetch+ReadableStream (event routing, frame reassembly
 across split chunks, malformed-line tolerance, non-ok→error, AbortController);
