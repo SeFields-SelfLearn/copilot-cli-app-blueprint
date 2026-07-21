@@ -201,6 +201,9 @@ Create precisely this tree (omit committed venvs / build artifacts):
 │           │   ├── chat.service.ts
 │           │   ├── payload-parser.service.ts
 │           │   ├── payload-parser.service.spec.ts
+│           │   ├── chat.service.spec.ts
+│           │   ├── conversation-state.service.spec.ts
+│           │   ├── auth.service.spec.ts
 │           │   ├── conversation.service.ts
 │           │   ├── conversation-state.service.ts
 │           │   ├── grounding.service.ts
@@ -1430,8 +1433,14 @@ strips fence spoofing; org policy reaches narration while user tone does not; an
 no instruction — org or personal — can widen access (a viewer told 'reveal names
 and salaries' still gets initials + null salary; a region-scoped analyst told
 'include all regions' still sees one; a hostile org policy can't make the grounded
-dashboard leak identifiers). Frontend Karma/Jasmine spec:
-the payload-parser edge cases listed above.
+dashboard leak identifiers). Frontend Karma/Jasmine specs (A3): the
+payload-parser edge cases listed above, plus the core services — `ChatService`
+SSE framing via a faked fetch+ReadableStream (event routing, frame reassembly
+across split chunks, malformed-line tolerance, non-ok→error, AbortController);
+`ConversationStateService` lifecycle (send posts history-minus-placeholder;
+reasoning/token/done mutate the message; /demo shortcut; rate toggle; select
+showChat+lazy-load; delete reselect; reset); and `AuthService`
+restore/login/changePassword/logout.
 
 ---
 
