@@ -956,9 +956,13 @@ params (see ingest/serving).
 CTE (`GROUP BY city`, value DESC, cap 60) returning `{title, value_label,
 points:[{city,value}]}` — pure aggregates, PII-safe like the single-chart tool.
 `dashboard_tool_definition()` / `run_dashboard_tool(conn, dimensions, measure,
-scope, worker_cte)` — 2-3 deduped dims from `DASHBOARD_DIMENSIONS` (the
-non-band dimensions; bands are single-chart constructs, city belongs to the
-map) x one measure -> per-worker rows for a client crossfilter board. Rows
+scope, worker_cte)` — deduped dims from `DASHBOARD_DIMENSIONS` (the non-band
+dimensions; bands are single-chart constructs, city belongs to the map) x one
+measure -> per-worker rows for a client crossfilter board. **Coerce the
+model-supplied `dimensions` tolerantly** (a proper list, a bare string
+`"work_mode"`, or a comma/space-separated string), drop unknowns, cap at 3, and
+**accept >= 1** valid dim (models routinely send one; a 1-dim board still
+renders) rather than returning nothing. Rows
 carry ONLY the chosen dims + one numeric column via `_MEASURE_COLUMNS`
 (headcount = dims only, charts `agg:"count"`; else `agg:"avg"`), NULL-free,
 capped `_DASHBOARD_ROW_CAP=500`. **Amended PII invariant: no grounded tool
